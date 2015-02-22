@@ -32,7 +32,7 @@ import org.apache.kafka.common.utils.Utils;
  * <li>If no partition is specified but a key is present choose a partition based on a hash of the key
  * <li>If no partition or key is present choose a partition in a round-robin fashion
  */
-public class Partitioner {
+public class DefaultPartitioner {
 
     private final AtomicInteger counter = new AtomicInteger(new Random().nextInt());
 

@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.kafka.clients.ClientUtils;
 import org.apache.kafka.clients.Metadata;
 import org.apache.kafka.clients.NetworkClient;
-import org.apache.kafka.clients.producer.internals.Partitioner;
+import org.apache.kafka.clients.producer.internals.DefaultPartitioner;
 import org.apache.kafka.clients.producer.internals.RecordAccumulator;
 import org.apache.kafka.clients.producer.internals.Sender;
 import org.apache.kafka.common.Cluster;
@@ -65,7 +65,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private static final Logger log = LoggerFactory.getLogger(KafkaProducer.class);
     private static final AtomicInteger PRODUCER_CLIENT_ID_SEQUENCE = new AtomicInteger(1);
 
-    private final Partitioner partitioner;
+    private final DefaultPartitioner defaultPartitioner;
     private final int maxRequestSize;
     private final long metadataFetchTimeoutMs;
     private final long totalMemorySize;
@@ -79,6 +79,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private final Time time;
     private final Serializer<K> keySerializer;
     private final Serializer<V> valueSerializer;
+    private final Partitioner<? super K, ? super V> partitioner;
     private final ProducerConfig producerConfig;
 
     /**
@@ -90,7 +91,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      *
      */
     public KafkaProducer(Map<String, Object> configs) {
-        this(new ProducerConfig(configs), null, null);
+        this(new ProducerConfig(configs), null, null, null);
     }
 
     /**
@@ -102,21 +103,25 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      * @param keySerializer  The serializer for key that implements {@link Serializer}. The configure() method won't be
      *                       called in the producer when the serializer is passed in directly.
      * @param valueSerializer  The serializer for value that implements {@link Serializer}. The configure() method won't
-     *                         be called in the producer when the serializer is passed in directly.
+     *                         be called in the producer when the serializer is passed in directly.     * @param valueSerializer  The serializer for value that implements {@link Serializer}. The configure() method won't
+     * @param partitioner  The partitione that implements {@link Partitioner}. The configure() method won't
+     *                         be called in the producer when the userPartitioner is passed in directly.
      */
-    public KafkaProducer(Map<String, Object> configs, Serializer<K> keySerializer, Serializer<V> valueSerializer) {
-        this(new ProducerConfig(addSerializerToConfig(configs, keySerializer, valueSerializer)),
-             keySerializer, valueSerializer);
+    public KafkaProducer(Map<String, Object> configs, Serializer<K> keySerializer, Serializer<V> valueSerializer, Partitioner<? super K, ? super V> partitioner) {
+        this(new ProducerConfig(addSerializerAndPartitionerToConfig(configs, keySerializer, valueSerializer, partitioner)),
+             keySerializer, valueSerializer, partitioner);
     }
 
-    private static Map<String, Object> addSerializerToConfig(Map<String, Object> configs,
-                                                      Serializer<?> keySerializer, Serializer<?> valueSerializer) {
+    private static Map<String, Object> addSerializerAndPartitionerToConfig(Map<String, Object> configs,
+                                                                           Serializer<?> keySerializer, Serializer<?> valueSerializer, Partitioner<?,?> partitioner) {
         Map<String, Object> newConfigs = new HashMap<String, Object>();
         newConfigs.putAll(configs);
         if (keySerializer != null)
             newConfigs.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, keySerializer.getClass());
         if (valueSerializer != null)
             newConfigs.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, valueSerializer.getClass());
+        if (partitioner != null)
+            newConfigs.put(ProducerConfig.PARTITIONER_CLASS_CONFIG, partitioner.getClass());
         return newConfigs;
     }
 
@@ -126,7 +131,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      * @param properties   The producer configs
      */
     public KafkaProducer(Properties properties) {
-        this(new ProducerConfig(properties), null, null);
+        this(new ProducerConfig(properties), null, null, null);
     }
 
     /**
@@ -137,25 +142,29 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      *                       called in the producer when the serializer is passed in directly.
      * @param valueSerializer  The serializer for value that implements {@link Serializer}. The configure() method won't
      *                         be called in the producer when the serializer is passed in directly.
+     * @param partitioner  The partitioner that implements {@link org.apache.kafka.clients.producer.internals.DefaultPartitioner}. The configure() method won't
+     *                         be called in the producer when the partitioner is passed in directly.
      */
-    public KafkaProducer(Properties properties, Serializer<K> keySerializer, Serializer<V> valueSerializer) {
-        this(new ProducerConfig(addSerializerToConfig(properties, keySerializer, valueSerializer)),
-             keySerializer, valueSerializer);
+    public KafkaProducer(Properties properties, Serializer<K> keySerializer, Serializer<V> valueSerializer, Partitioner<? super K, ? super V> partitioner) {
+        this(new ProducerConfig(addSerializerAndPartitionerToConfig(properties, keySerializer, valueSerializer, partitioner)),
+             keySerializer, valueSerializer, partitioner);
     }
 
-    private static Properties addSerializerToConfig(Properties properties,
-                                                    Serializer<?> keySerializer, Serializer<?> valueSerializer) {
+    private static Properties addSerializerAndPartitionerToConfig(Properties properties,
+                                                                  Serializer<?> keySerializer, Serializer<?> valueSerializer, Partitioner<?, ?> partitioner) {
         Properties newProperties = new Properties();
         newProperties.putAll(properties);
         if (keySerializer != null)
             newProperties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, keySerializer.getClass().getName());
         if (valueSerializer != null)
             newProperties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, valueSerializer.getClass().getName());
+        if (partitioner != null)
+            newProperties.put(ProducerConfig.PARTITIONER_CLASS_CONFIG, partitioner.getClass().getName());
         return newProperties;
     }
 
     @SuppressWarnings("unchecked")
-    private KafkaProducer(ProducerConfig config, Serializer<K> keySerializer, Serializer<V> valueSerializer) {
+    private KafkaProducer(ProducerConfig config, Serializer<K> keySerializer, Serializer<V> valueSerializer, Partitioner<? super K, ? super V> partitioner) {
         log.trace("Starting the Kafka producer");
         this.producerConfig = config;
         this.time = new SystemTime();
@@ -170,7 +179,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                                                                         MetricsReporter.class);
         reporters.add(new JmxReporter(jmxPrefix));
         this.metrics = new Metrics(metricConfig, reporters, time);
-        this.partitioner = new Partitioner();
+        this.defaultPartitioner = new DefaultPartitioner();
         long retryBackoffMs = config.getLong(ProducerConfig.RETRY_BACKOFF_MS_CONFIG);
         this.metadataFetchTimeoutMs = config.getLong(ProducerConfig.METADATA_FETCH_TIMEOUT_CONFIG);
         this.metadata = new Metadata(retryBackoffMs, config.getLong(ProducerConfig.METADATA_MAX_AGE_CONFIG));
@@ -226,6 +235,14 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             this.valueSerializer.configure(config.originals(), false);
         } else {
             this.valueSerializer = valueSerializer;
+        }
+
+        if (partitioner == null) {
+            this.partitioner = config.getConfiguredInstance(ProducerConfig.PARTITIONER_CLASS_CONFIG,
+                    Partitioner.class);
+            this.partitioner.configure(config.originals());
+        } else {
+            this.partitioner = partitioner;
         }
 
         config.logUnused();
@@ -330,10 +347,16 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                         " to class " + producerConfig.getClass(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG).getName() +
                         " specified in value.serializer");
             }
-            int partition = partitioner.partition(record.topic(), serializedKey, record.partition(), metadata.fetch());
+            final int partition;
+            if (record.partition() != null) {
+                partition = record.partition();
+            } else {
+                partition = partitioner.partition(record.topic(), record.key(), record.value(), metadata.fetch());
+            }
+            final int actualPartition = defaultPartitioner.partition(record.topic(), serializedKey, partition, metadata.fetch());
             int serializedSize = Records.LOG_OVERHEAD + Record.recordSize(serializedKey, serializedValue);
             ensureValidRecordSize(serializedSize);
-            TopicPartition tp = new TopicPartition(record.topic(), partition);
+            TopicPartition tp = new TopicPartition(record.topic(), actualPartition);
             log.trace("Sending record {} with callback {} to topic {} partition {}", record, callback, record.topic(), partition);
             RecordAccumulator.RecordAppendResult result = accumulator.append(tp, serializedKey, serializedValue, compressionType, callback);
             if (result.batchIsFull || result.newBatchCreated) {

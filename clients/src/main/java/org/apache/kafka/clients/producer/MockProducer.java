@@ -26,7 +26,7 @@ import java.util.Map;
 import java.util.concurrent.Future;
 
 import org.apache.kafka.clients.producer.internals.FutureRecordMetadata;
-import org.apache.kafka.clients.producer.internals.Partitioner;
+import org.apache.kafka.clients.producer.internals.DefaultPartitioner;
 import org.apache.kafka.clients.producer.internals.ProduceRequestResult;
 import org.apache.kafka.common.*;
 
@@ -40,7 +40,7 @@ import org.apache.kafka.common.*;
 public class MockProducer implements Producer<byte[], byte[]> {
 
     private final Cluster cluster;
-    private final Partitioner partitioner = new Partitioner();
+    private final DefaultPartitioner defaultPartitioner = new DefaultPartitioner();
     private final List<ProducerRecord<byte[], byte[]>> sent;
     private final Deque<Completion> completions;
     private boolean autoComplete;
@@ -100,7 +100,7 @@ public class MockProducer implements Producer<byte[], byte[]> {
     public synchronized Future<RecordMetadata> send(ProducerRecord<byte[], byte[]> record, Callback callback) {
         int partition = 0;
         if (this.cluster.partitionsForTopic(record.topic()) != null)
-            partition = partitioner.partition(record.topic(), record.key(), record.partition(), this.cluster);
+            partition = defaultPartitioner.partition(record.topic(), record.key(), record.partition(), this.cluster);
         ProduceRequestResult result = new ProduceRequestResult();
         FutureRecordMetadata future = new FutureRecordMetadata(result, 0);
         TopicPartition topicPartition = new TopicPartition(record.topic(), partition);
